@@ -1,6 +1,6 @@
 {
   "name": "bc-source-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server exposing Business Central source code (all versions and localizations) from MSDyn365BC.Sandbox.Code.History to AI agents.",
   "type": "module",
   "bin": {
