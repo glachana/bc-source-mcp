@@ -48,21 +48,12 @@ function* walkAlFiles(root: string): Generator<string> {
   }
 }
 
-export async function indexBranch(branch: string, opts: { force?: boolean } = {}): Promise<IndexBranchResult> {
+export async function indexBranch(branch: string, _opts: { force?: boolean } = {}): Promise<IndexBranchResult> {
   const validation = validateBranch(branch);
   if (!validation.ok) throw new Error(validation.reason);
 
   const db = getDb();
   const now = Date.now();
-
-  if (!opts.force) {
-    const row = db.prepare<[string], { last_indexed_at: number | null }>(
-      'SELECT last_indexed_at FROM branches WHERE name = ?',
-    ).get(branch);
-    if (row && row.last_indexed_at) {
-      logger.info({ branch, last_indexed_at: row.last_indexed_at }, 'Branch already indexed (use force=true to reindex)');
-    }
-  }
 
   logger.info({ branch }, 'Fetching branch');
   await fetchBranch(branch);
@@ -97,15 +88,21 @@ export async function indexBranch(branch: string, opts: { force?: boolean } = {}
       last_fetched_at = excluded.last_fetched_at,
       worktree_path = excluded.worktree_path
   `);
+  const upsertFts = db.prepare(`
+    INSERT INTO objects_fts (branch, app, type, name, path, content)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
   const deleteOldObjects = db.prepare(`DELETE FROM objects WHERE branch = ?`);
   const deleteOldApps = db.prepare(`DELETE FROM apps WHERE branch = ?`);
   const deleteOldEvents = db.prepare(`DELETE FROM event_publishers WHERE branch = ?`);
+  const deleteOldFts = db.prepare(`DELETE FROM objects_fts WHERE branch = ?`);
 
   let eventsIndexed = 0;
   const tx = db.transaction(() => {
     deleteOldObjects.run(branch);
     deleteOldApps.run(branch);
     deleteOldEvents.run(branch);
+    deleteOldFts.run(branch);
 
     for (const file of walkAlFiles(wt)) {
       filesScanned++;
@@ -131,6 +128,8 @@ export async function indexBranch(branch: string, opts: { force?: boolean } = {}
         branch, app, header.type, header.id, header.name, header.extends, rel,
       );
       objectsIndexed++;
+
+      upsertFts.run(branch, app, header.type, header.name, rel, source);
 
       // Event publishers live in codeunits, tables, pages mostly — but scan everything.
       const events = extractEventPublishers(source);

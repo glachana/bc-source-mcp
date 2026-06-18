@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { validateBranch } from '../git/branch-resolver.js';
@@ -8,19 +8,32 @@ import { findObject, getBranchIndexInfo, listEventPublishers } from '../index/qu
 import { findProcedure } from '../parser/al-procedures.js';
 import { logger } from '../utils/logger.js';
 
+function safeJoinUnderWorktree(worktree: string, relPath: string): string | null {
+  const wtAbs = resolve(worktree);
+  const candidate = resolve(wtAbs, relPath);
+  const wtPrefix = wtAbs.endsWith(sep) ? wtAbs : wtAbs + sep;
+  if (candidate !== wtAbs && !candidate.startsWith(wtPrefix)) return null;
+  return candidate;
+}
+
 export function registerLookupTools(server: McpServer): void {
   server.registerTool(
     'bc_get_object',
     {
       title: 'Get the source of an AL object',
       description:
-        'Returns the full AL source of a specific object (table, page, codeunit, report, enum, query, xmlport, or any extension). ' +
+        'Returns the AL source of a specific object (table, page, codeunit, report, enum, query, xmlport, or any extension). ' +
         'Identifies the object by branch + type + name (case-insensitive on type, exact on name). ' +
-        'Triggers indexing on first use of a branch.',
+        'Triggers indexing on first use of a branch. ' +
+        'Use line_start/line_end to fetch only a slice (1-indexed, inclusive) — useful for large objects (~100k lines). ' +
+        'Use include_source=false to skip the source and get only metadata (size, total_lines).',
       inputSchema: {
-        branch: z.string().describe('Branch name, e.g. "w1-26"'),
-        type: z.string().describe('AL object type, e.g. "table", "page", "codeunit"'),
-        name: z.string().describe('Object name (without quotes), e.g. "Customer", "Sales Header"'),
+        branch: z.string().min(1).max(64).describe('Branch name, e.g. "w1-26"'),
+        type: z.string().min(1).max(64).describe('AL object type, e.g. "table", "page", "codeunit"'),
+        name: z.string().min(1).max(256).describe('Object name (without quotes), e.g. "Customer", "Sales Header"'),
+        line_start: z.number().int().min(1).optional().describe('Optional 1-indexed start line (inclusive). Default 1.'),
+        line_end: z.number().int().min(1).optional().describe('Optional 1-indexed end line (inclusive). Default: last line.'),
+        include_source: z.boolean().optional().describe('If false, omits the source string and returns only metadata. Default true.'),
       },
       outputSchema: {
         branch: z.string(),
@@ -32,10 +45,16 @@ export function registerLookupTools(server: McpServer): void {
         ext_target: z.string().nullable(),
         source: z.string(),
         size_bytes: z.number(),
+        total_lines: z.number(),
+        returned_lines: z.object({
+          start: z.number(),
+          end: z.number(),
+        }),
+        truncated: z.boolean(),
       },
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
-    async ({ branch, type, name }) => {
+    async ({ branch, type, name, line_start, line_end, include_source }) => {
       const v = validateBranch(branch);
       if (!v.ok) {
         return { content: [{ type: 'text', text: `Error: ${v.reason}` }], isError: true };
@@ -63,10 +82,16 @@ export function registerLookupTools(server: McpServer): void {
         };
       }
 
-      const fullPath = join(info.worktree_path, obj.path);
-      let source: string;
+      const fullPath = safeJoinUnderWorktree(info.worktree_path, obj.path);
+      if (!fullPath) {
+        return {
+          content: [{ type: 'text', text: `Internal error: indexed path "${obj.path}" escapes worktree root.` }],
+          isError: true,
+        };
+      }
+      let fullSource: string;
       try {
-        source = readFileSync(fullPath, 'utf8');
+        fullSource = readFileSync(fullPath, 'utf8');
       } catch (err) {
         return {
           content: [{ type: 'text', text: `Failed to read source at ${fullPath}: ${(err as Error).message}` }],
@@ -74,20 +99,47 @@ export function registerLookupTools(server: McpServer): void {
         };
       }
 
+      const totalSizeBytes = Buffer.byteLength(fullSource, 'utf8');
+      const allLines = fullSource.split(/\r?\n/);
+      const totalLines = allLines.length;
+
+      const wantSource = include_source !== false;
+      const startEff = Math.max(1, line_start ?? 1);
+      const endEff = Math.min(totalLines, line_end ?? totalLines);
+      const truncated = startEff > 1 || endEff < totalLines;
+
+      let returnedSource = '';
+      if (wantSource) {
+        if (truncated) {
+          returnedSource = allLines.slice(startEff - 1, endEff).join('\n');
+        } else {
+          returnedSource = fullSource;
+        }
+      }
+
+      const sourceHeader = wantSource
+        ? `\n\`\`\`al\n${returnedSource}\n\`\`\``
+        : '\n[source omitted: include_source=false]';
+      const rangeLabel = truncated ? ` (lines ${startEff}-${endEff}/${totalLines})` : '';
+
       return {
         content: [
           {
             type: 'text',
-            text: `# ${obj.type} ${obj.id ?? ''} "${obj.name}"\n` +
+            text: `# ${obj.type} ${obj.id ?? ''} "${obj.name}"${rangeLabel}\n` +
               `Branch: ${branch} | App: ${obj.app} | Path: ${obj.path}\n` +
               (obj.ext_target ? `Extends: "${obj.ext_target}"\n` : '') +
-              `\n\`\`\`al\n${source}\n\`\`\``,
+              sourceHeader,
           },
         ],
         structuredContent: {
           branch, type: obj.type, id: obj.id, name: obj.name, app: obj.app,
           path: obj.path, ext_target: obj.ext_target,
-          source, size_bytes: Buffer.byteLength(source, 'utf8'),
+          source: returnedSource,
+          size_bytes: totalSizeBytes,
+          total_lines: totalLines,
+          returned_lines: { start: startEff, end: endEff },
+          truncated,
         },
       };
     },
@@ -203,7 +255,14 @@ export function registerLookupTools(server: McpServer): void {
           isError: true,
         };
       }
-      const source = readFileSync(join(info.worktree_path, obj.path), 'utf8');
+      const safePath = safeJoinUnderWorktree(info.worktree_path, obj.path);
+      if (!safePath) {
+        return {
+          content: [{ type: 'text', text: `Internal error: indexed path "${obj.path}" escapes worktree root.` }],
+          isError: true,
+        };
+      }
+      const source = readFileSync(safePath, 'utf8');
       const proc = findProcedure(source, procedure_name);
       if (!proc) {
         return {

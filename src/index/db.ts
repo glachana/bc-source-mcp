@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS event_publishers (
 
 CREATE INDEX IF NOT EXISTS idx_events_branch_source ON event_publishers(branch, source_type, source_name);
 CREATE INDEX IF NOT EXISTS idx_events_branch_name ON event_publishers(branch, event_name);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS objects_fts USING fts5(
+  branch UNINDEXED,
+  app UNINDEXED,
+  type UNINDEXED,
+  name,
+  path UNINDEXED,
+  content,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
 `;
 
 export function getDb(): DB {
@@ -68,6 +78,7 @@ export function getDb(): DB {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
 
   cached = db;

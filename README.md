@@ -22,7 +22,7 @@ Exemples d'usages typiques :
 - Chercher tous les usages d'un motif de code a travers la Base Application
 - Comparer la presence d'un objet entre plusieurs versions
 
-## Les 13 tools exposes
+## Les 14 tools exposes
 
 | Categorie | Tool | Description |
 |---|---|---|
@@ -32,13 +32,18 @@ Exemples d'usages typiques :
 | Decouverte | `bc_list_apps` | Apps top-level d'une branche |
 | Decouverte | `bc_list_objects` | Objets AL filtres (type / app / pattern) avec pagination |
 | Decouverte | `bc_find_object_across_branches` | Presence d'un objet a travers les branches indexees |
-| Lookup | `bc_get_object` | Source AL complet + metadonnees d'un objet |
+| Lookup | `bc_get_object` | Source AL d'un objet (avec `line_start`/`line_end`/`include_source` pour les gros objets) |
 | Lookup | `bc_get_event_publishers` | Events publies par un objet (`IntegrationEvent`, `BusinessEvent`, `InternalEvent`) |
 | Lookup | `bc_get_procedure` | Procedure ciblee avec signature, body, attributes |
-| Recherche | `bc_search_code` | Full-text via ripgrep, scope par app/type |
+| Recherche | `bc_search_code` | Recherche regex via ripgrep, scope par app/type (avec timeout de 30s) |
+| Recherche | `bc_search_fts` | Full-text FTS5 **cross-branch**, syntaxe FTS5 (tokens, phrases, prefix*) avec snippets |
 | Admin | `bc_refresh` | Re-fetch + re-index d'une ou toutes les branches |
 | Admin | `bc_cache_status` | Disk usage + branches indexees |
 | Admin | `bc_prune_cache` | Suppression selective de worktrees |
+
+> Note : apres une mise a jour vers une version qui introduit l'index FTS5, les branches deja
+> indexees ne sont **pas** automatiquement re-indexees. Lancez `bc_refresh` sur les branches
+> que vous voulez voir apparaitre dans `bc_search_fts`.
 
 ## Installation
 

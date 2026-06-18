@@ -47,9 +47,72 @@ export function deleteBranchData(branch: string): void {
     db.prepare('DELETE FROM event_publishers WHERE branch = ?').run(branch);
     db.prepare('DELETE FROM objects WHERE branch = ?').run(branch);
     db.prepare('DELETE FROM apps WHERE branch = ?').run(branch);
+    db.prepare('DELETE FROM objects_fts WHERE branch = ?').run(branch);
     db.prepare('DELETE FROM branches WHERE name = ?').run(branch);
   });
   tx();
+}
+
+export interface FtsSearchFilters {
+  query: string;
+  branches?: string[];
+  app?: string;
+  type?: string;
+  limit: number;
+  offset: number;
+}
+
+export interface FtsMatchRow {
+  branch: string;
+  app: string;
+  type: string;
+  name: string;
+  path: string;
+  snippet: string;
+  score: number;
+}
+
+export interface FtsSearchResult {
+  total: number;
+  items: FtsMatchRow[];
+}
+
+export function searchFts(filters: FtsSearchFilters): FtsSearchResult {
+  const db = getDb();
+  const where: string[] = ['objects_fts MATCH @query'];
+  const params: Record<string, unknown> = { query: filters.query };
+
+  if (filters.branches && filters.branches.length > 0) {
+    const placeholders = filters.branches.map((_, i) => `@b${i}`).join(',');
+    where.push(`branch IN (${placeholders})`);
+    filters.branches.forEach((b, i) => { params[`b${i}`] = b; });
+  }
+  if (filters.app) {
+    where.push('app = @app');
+    params.app = filters.app;
+  }
+  if (filters.type) {
+    where.push('LOWER(type) = LOWER(@type)');
+    params.type = filters.type;
+  }
+
+  const whereSql = where.join(' AND ');
+  const totalRow = db.prepare<typeof params, { c: number }>(
+    `SELECT COUNT(*) AS c FROM objects_fts WHERE ${whereSql}`,
+  ).get(params);
+  const total = totalRow?.c ?? 0;
+
+  const items = db.prepare<typeof params, FtsMatchRow>(
+    `SELECT branch, app, type, name, path,
+            snippet(objects_fts, 5, '<<', '>>', '…', 16) AS snippet,
+            bm25(objects_fts) AS score
+     FROM objects_fts
+     WHERE ${whereSql}
+     ORDER BY score
+     LIMIT @limit OFFSET @offset`,
+  ).all({ ...params, limit: filters.limit, offset: filters.offset });
+
+  return { total, items };
 }
 
 export function isBranchIndexed(branch: string): boolean {
