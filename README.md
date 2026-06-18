@@ -164,6 +164,12 @@ Sur `w1-26` : ~15 000 objets AL et ~22 000 event publishers indexes en ~10 s.
 
 Issues et PR bienvenues sur [https://github.com/glachana/bc-source-mcp](https://github.com/glachana/bc-source-mcp).
 
+Le projet utilise **Conventional Commits** + **release-please** pour le versioning
+et la publication npm automatiques. Lire [CONTRIBUTING.md](CONTRIBUTING.md) avant
+d'ouvrir une PR.
+
+Roadmap d'ameliorations en cours : [IMPROVEMENTS.md](IMPROVEMENTS.md).
+
 ## Licence
 
 [MIT](LICENSE) (c) 2026 Gabriel Lachana.
